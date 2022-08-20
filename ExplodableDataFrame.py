@@ -141,7 +141,6 @@ class ExplodableDataFrame(pd.DataFrame):
 
     def detect_column_relationships(self):
         # TODO add ignore_columns option to relationships to save time
-        # TODO make find_relationships find bijectives in one step instead of two, again
         types = {
             "Independent": [],
             "Constant": [],
@@ -153,7 +152,7 @@ class ExplodableDataFrame(pd.DataFrame):
         # to start, assume every column is independent
         types["Independent"] = list(self.columns)
 
-        # check if every value in column is unique
+        # identify columns where all values are unique or constant
         for col in self.columns:
             unique_count = len(self[col].drop_duplicates())
             if len(self[col]) == unique_count:
@@ -162,66 +161,46 @@ class ExplodableDataFrame(pd.DataFrame):
             elif unique_count == 1:
                 types["Constant"].append(col)
                 types["Independent"].remove(col)
-
+        
         # compare each column to each other column
-        remaining_columns = [c for c in types['Independent']]
-        for i in range(len(remaining_columns)):
-            col_x = remaining_columns[i]
-            for j in range(len(remaining_columns)):
-                col_y = remaining_columns[j]
-                if col_x == col_y: continue
-                
-                relationship = self.characterize_column_relationship(col_x, col_y)
-                if relationship == "Independent":
-                    pass
-                elif relationship == "Identifies":
-                    if (col_x, col_y) not in types["Identifies"]:
+        column_pairs = combinations(types['Independent'], 2)
+        bijective_map = {}
+        for col_x, col_y in column_pairs:
+
+            # skip dependent columns
+            if col_x not in types["Independent"]: continue
+            # skip redundant columns
+            if col_x in bijective_map and bijective_map[col_x][0] != col_x: continue
+
+            relationship = self.characterize_column_relationship(col_x, col_y)
+            if relationship != "Independent": # some relationship exists
+                inv_relationship = self.characterize_column_relationship(col_y, col_x)
+                if relationship == inv_relationship == "Identifies": # 1-1 relationship
+
+                    if col_x not in bijective_map and col_y not in bijective_map:
+                        types["Bijective"].append([col_x, col_y])
+                        bijective_map[col_x] = types["Bijective"][-1]
+                        bijective_map[col_y] = types["Bijective"][-1]
+                        remove_if_present(types["Independent"], col_y)
+                    else:
+                        if col_x not in bijective_map:
+                            group = bijective_map[col_y]
+                            group.append(col_x)
+                            remove_if_present(types["Independent"], col_x)
+                        if col_y not in bijective_map:
+                            group = bijective_map[col_x]
+                            group.append(col_y)
+                            remove_if_present(types["Independent"], col_y)
+                        
+                else: # 1-many or many-1 relationship
+                    if relationship == "Identifies":
                         types["Identifies"].append((col_x, col_y))
-                        if col_y in types["Independent"]:
-                            types["Independent"].remove(col_y)
-                elif relationship == "Injective":
-                    if (col_y, col_x) not in types["Identifies"]:
+                        remove_if_present(types["Independent"], col_y)
+                    elif relationship == "Injective":
                         types["Identifies"].append((col_y, col_x))
-                        if col_x in types["Independent"]:
-                            types["Independent"].remove(col_x)
-
-        # identify bijective associations between columns
-        i = 0
-        while i < len(types["Identifies"]):
-            (col_x, col_y) = types["Identifies"][i]
-            if (col_y, col_x) in types["Identifies"]:
-                types["Identifies"].remove((col_x, col_y))
-                types["Identifies"].remove((col_y, col_x))
-                types["Bijective"].append((col_x, col_y))
-            else:
-                i += 1
-
-        # group bijective relationships
-        groups = []
-        for x, y in types["Bijective"]:
-            unique_columns = True
-            for g in groups:
-                if x in g or y in g:
-                    unique_columns = False
-                    if x not in g: g.append(x)
-                    if y not in g: g.append(y)
-                    break
-            if unique_columns:
-                groups.append([x, y])
-        types["Bijective"] = groups
-
-        # remove duplicate identifications due to bijective relationships
-        i = 0
-        while i < len(types["Identifies"]):
-            pair = types["Identifies"][i]
-            x, y = pair
-            for g in types["Bijective"]:
-                if y in g and g[0] != y:
-                    types["Identifies"].remove(pair)
-            i += 1
+                        remove_if_present(types["Independent"], col_x)
 
         return types
-
 
     def characterize_column_relationships(self, col):
         col_x = col
