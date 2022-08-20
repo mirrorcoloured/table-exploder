@@ -33,21 +33,19 @@ class ExplodableDataFrame(pd.DataFrame):
         return name
 
 
-    def break_into_subtables(self, max_composite_depth=1, joiner="▲", key_flag="†"):
+    def break_into_subtables(self, max_composite_depth=1, joiner="▲", key_flag="†", fkey_flag="‡"):
         
         # TODO add argument for abstraction depth to pull common columns from separate tables
 
-        # TODO track key/fk relationships and only change names at the end
-        # TODO track table-key and key-table mappings
         working_table = self.copy()
         tables = [working_table]
-        schema = [[]]
-        constants = []
-        uniques = []
-        foreign_keys = []
+        table_primary_keys = [[]]
+        table_foreign_keys = [{}]
+        all_keys = []
+        skip_columns = []
         composite_depth = 1
 
-        def extract_columns_to_new_table(column_structure, composites):
+        def extract_columns_to_new_table(column_structure, composites, tables, table_primary_keys, table_foreign_keys):
             for key_column, dependent_columns in column_structure.items():
                 # identify keys
                 if key_column in composites:
@@ -55,14 +53,18 @@ class ExplodableDataFrame(pd.DataFrame):
                 else:
                     keys = [key_column]
                 for k in keys:
-                    foreign_keys.append(k)
+                    if k not in table_foreign_keys[0]:
+                        table_foreign_keys[0][k] = []
+                    table_foreign_keys[0][k].append(len(tables))
                 column_headers = keys + dependent_columns
+
                 # create new table
                 new_table = pd.concat([working_table[c] for c in column_headers], axis=1)
                 new_table.drop_duplicates(inplace=True)
-                new_table.rename({c:f'{c}{key_flag}'for c in keys}, axis=1, inplace=True)
                 tables.append(new_table)
-                schema.append(keys)
+                table_primary_keys.append(keys)
+                for key in keys:
+                    if key not in all_keys: all_keys.append(key)
             
             # remove dependent columns
             for key_column, dependent_columns in column_structure.items():
@@ -70,12 +72,6 @@ class ExplodableDataFrame(pd.DataFrame):
                     if col in working_table.columns:
                         working_table.drop(col, axis=1, inplace=True)
         
-        def mark_constants_and_uniques(relationships):
-            for col in relationships['Constant']:
-                if col not in constants: constants.append(col)
-            for col in relationships['Unique']:
-                if col not in uniques: uniques.append(col)
-
         def remove_composite_redundancy(relationships, composites):
             if composite_depth > 1:
                 i = 0
@@ -91,32 +87,29 @@ class ExplodableDataFrame(pd.DataFrame):
             # add composite columns
             composites = {}
             if composite_depth > 1:
-                working_columns = [c for c in working_table.columns if c not in constants and c not in uniques]
-                if len(working_columns) == composite_depth: break
+                working_columns = [c for c in working_table.columns if c not in skip_columns]
+                # if len(working_columns) == composite_depth: break
+# PUT ME BACK
                 for combo in list(combinations(working_columns, composite_depth)):
                     composite_name = working_table.add_composite_column(combo, joiner=joiner)
                     composites[composite_name] = list(combo)
 
-# TODO add identification relationships to bijective tables if created?
-# TODO process bijectives and identifications at the same time
-
 # TODO pull out tables for constants and uniques first
 
-            # pull out bijective relationships
             relationships = working_table.detect_column_relationships()
-            mark_constants_and_uniques(relationships)
+            if composite_depth == 1:
+                for col in relationships['Constant']:
+                    if col not in skip_columns: skip_columns.append(col)
+                for col in relationships['Unique']:
+                    if col not in skip_columns: skip_columns.append(col)
             remove_composite_redundancy(relationships, composites)
+
             column_structure = {}
+            # pull out bijective relationships
             for g in relationships["Bijective"]:
                 key, *others = g # take first value as key
                 column_structure[key] = others
-            extract_columns_to_new_table(column_structure, composites)
-
             # pull out identification relationships
-            relationships = working_table.detect_column_relationships()
-            mark_constants_and_uniques(relationships)
-            remove_composite_redundancy(relationships, composites)
-            column_structure = {}
             dependent_cols = []
             for col_x, col_y in relationships["Identifies"]:
                 if col_x not in dependent_cols:
@@ -124,7 +117,7 @@ class ExplodableDataFrame(pd.DataFrame):
                         column_structure[col_x] = []
                     column_structure[col_x].append(col_y)
                     dependent_cols.append(col_y)
-            extract_columns_to_new_table(column_structure, composites)
+            extract_columns_to_new_table(column_structure, composites, tables, table_primary_keys, table_foreign_keys)
 
             # remove composite columns
             for col in composites:
@@ -132,9 +125,17 @@ class ExplodableDataFrame(pd.DataFrame):
 
             composite_depth += 1
         
-        # identify keys in final table
-        working_table.rename({c:f'{c}{key_flag}'for c in foreign_keys}, axis=1, inplace=True)
-        schema[0] = foreign_keys
+        # condense into schema
+        schema = []
+        for table in tables:
+            schema.append(list(table.columns))
+
+        # rename columns to identify keys in final tables
+        for i, table in enumerate(tables):
+            column_renames = {}
+            for k in all_keys:
+                column_renames[k] = f'{k}{key_flag if k in table_primary_keys[i] else fkey_flag}'
+            table.rename(column_renames, axis=1, inplace=True)
 
         return tables, schema
         
