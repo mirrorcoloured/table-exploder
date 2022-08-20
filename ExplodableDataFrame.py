@@ -276,3 +276,9 @@ class ExplodableDataFrame(pd.DataFrame):
         ax = plt.gca()
         ax.margins(0.20)
         plt.show()
+
+
+def remove_if_present(list_obj, value):
+    if value in list_obj:
+        return list_obj.remove(value)
+    return None
